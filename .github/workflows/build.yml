@@ -153,7 +153,15 @@ jobs:
           real=$(realpath $path)
           echo "Apply patches in $real to frida/subprojects/$name"
           cd subprojects/$name
-          git am --3way ../../../patches/$name/*.patch || git am --abort; for p in ../../../patches/$name/*.patch; do patch -p1 --forward --fuzz=5 < "$p" || true; done
+          if git am --3way ../../../patches/$name/*.patch; then
+            echo "git am (3way) ok for $name"
+          else
+            git am --abort 2>/dev/null || true
+            for pp in ../../../patches/$name/*.patch; do
+              echo "fallback patch: $pp"
+              patch -p1 --forward --fuzz=8 < "$pp" || true
+            done
+          fi
           cd ../..
           echo $i
         done
