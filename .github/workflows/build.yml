@@ -209,15 +209,14 @@ jobs:
             core.setFailed(e.message);
           }
 
-    - name: package build result for Android
+        - name: package build result for Android
       shell: bash
       run: |
-        
-        gzip build-android-arm64/subprojects/frida-core/server/frida-server
-        
-        gzip build-android-arm64/subprojects/frida-core/inject/frida-inject
-        
-        gzip build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so
+        gzip -kf build-android-arm64/subprojects/frida-core/server/frida-server
 
-        gzip build-android-arm64/subprojects/frida-gum/bindings/gumjs/libfrida-gumjs-1.0.a
-        
+    - name: Upload android arm64 frida-server artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: florida-server-android-arm64
+        path: build-android-arm64/subprojects/frida-core/server/frida-server.gz
+        if-no-files-found: error
