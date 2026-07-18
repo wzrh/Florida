@@ -1,222 +1,84 @@
 name: Florida
 
 on:
-  schedule:
-    - cron: "0 9/12 * * *"
-  workflow_dispatch:
   push:
-    branches: ["main", "ci"]
+    branches: [main]
     paths:
       - ".github/workflows/build.yml"
-      - "patches/**"
+  workflow_dispatch:
 
-jobs: 
-  check_version:
+jobs:
+  build:
     runs-on: ubuntu-22.04
-
-    outputs:
-      FRIDA_VERSION: ${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}
-      ALREADY_RELEASE: ${{ steps.checkReleaseVersion.outputs.ALREADY_RELEASE }}
     steps:
-      - name: Pull Frida Latest Release
-        id: pullFridaLatestRelease
-        uses: actions/github-script@v3
-        with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            const releaseResponse = await github.repos.getLatestRelease({
-              owner: 'frida',
-              repo: 'frida',
-            })
-            const {
-              data: { tag_name: ver }
-            } = releaseResponse;
-            core.setOutput('FRIDA_VERSION', ver);
+      - uses: actions/checkout@v3
 
-      - name: Split Repository Name
-        id: split_name
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29
+          local-cache: false
+          link-to-sdk: true
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.9
+
+      - name: install dependencies
         run: |
-          repo_name=${{ github.repository }}
-          IFS='/' read -ra repo_parts <<< "$repo_name"
-          echo "owner=${repo_parts[0]}" >> $GITHUB_OUTPUT
-          echo "repo=${repo_parts[1]}" >> $GITHUB_OUTPUT
+          sudo apt-get update && DEBIAN_FRONTEND=noninteractive sudo apt-get install build-essential tree ninja-build gcc-multilib g++-multilib lib32stdc++-9-dev flex bison ruby ruby-dev python3-requests python3-setuptools python3-dev python3-pip libc6-dev libc6-dev-i386 -y
+          sudo gem install fpm -v 1.11.0 --no-document
+          python3 -m pip install lief graphlib
 
-      - name: Check release version
-        id: checkReleaseVersion
-        uses: actions/github-script@v3
-        with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            try {
-              const releaseVersion = '${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}'
-              const releaseResponse = await github.repos.getReleaseByTag({
-                owner: '${{ steps.split_name.outputs.owner }}',
-                repo: '${{ steps.split_name.outputs.repo }}',
-                tag: releaseVersion
-              });
-              const {
-                data: { tag_name: ver }
-              } = releaseResponse;
-              if (ver == '${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}'){
-                  if ( ${{ ( github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}){
-                    core.setOutput('ALREADY_RELEASE', '2');
-                  } else {
-                    core.setOutput('ALREADY_RELEASE', '1');
-                  }
-              }
-              else{
-                  core.setOutput('ALREADY_RELEASE', '0');
-              }
-            } catch (e) {
-              if(e.message == 'Not Found'){
-                core.setOutput('ALREADY_RELEASE', '0');
-              }
-              else{
-                core.setFailed(e.message);
-              }
-            }
-      
-      - name: Delete release
-        if: ${{ steps.checkReleaseVersion.outputs.ALREADY_RELEASE == '2' }}
-        uses: dev-drprasad/delete-tag-and-release@v1.0
-        with:
-          tag_name: ${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          delete_release: true
-
-  create_release:
-    needs: check_version
-    runs-on: ubuntu-22.04
-    if: needs.check_version.outputs.ALREADY_RELEASE != '1'
-
-    steps:
-      - uses: softprops/action-gh-release@v2.1.0
-        id: createRelease
-        name: Create Runner Release
+      - name: build frida for Android (arm64)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: "${{ needs.check_version.outputs.FRIDA_VERSION }}"
-          name: "${{ needs.check_version.outputs.FRIDA_VERSION }}"
-          prerelease: false
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          FRIDA_VERSION: "17.16.0"
+        shell: bash
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-  android_build:
-    runs-on: ubuntu-22.04
-    needs: [check_version, create_release]
+          git clone --recurse-submodules --branch "${FRIDA_VERSION}" https://github.com/frida/frida
+          cd frida
+          for path in ../patches/*; do
+            name=$(basename "$path")
+            echo "Apply patches in $path to frida/subprojects/$name"
+            ( cd "subprojects/$name" && for p in ../../../patches/"$name"/*.patch; do
+                if git am --3way "$p"; then
+                  echo "  git am ok: $p"
+                else
+                  git am --abort 2>/dev/null || true
+                  echo "  fallback patch: $p"
+                  patch -p1 --forward --fuzz=8 < "$p" || true
+                fi
+              done )
+          done
+          cd ..
 
-    steps:
-    - uses: actions/checkout@v3
-
-    - uses: actions/setup-node@v3
-      with:
-        node-version: 18
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v3
-      with:
-        distribution: "temurin"
-        java-version: "17"
-
-    - name: Setup Android NDK
-      id: setup-ndk
-      uses: nttld/setup-ndk@v1
-      with:
-        ndk-version: r29
-        local-cache: false
-        link-to-sdk: true
-
-    - name: Set up Python 3.9
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.9
-
-    - name: install dependencies
-      run: |
-        sudo apt-get update && DEBIAN_FRONTEND=noninteractive sudo apt-get install build-essential tree ninja-build gcc-multilib g++-multilib lib32stdc++-9-dev flex bison ruby ruby-dev python3-requests python3-setuptools python3-dev python3-pip libc6-dev libc6-dev-i386 -y
-        sudo gem install fpm -v 1.11.0 --no-document
-        python3 -m pip install lief graphlib
-
-    - name: build frida for Android
-      shell: bash
-      run: |
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        
-        export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
-        echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-        
-        git clone --recurse-submodules https://github.com/frida/frida
-        cd frida
-        for path in ../patches/*
-        do
-          name=$(basename $path)
-          real=$(realpath $path)
-          echo "Apply patches in $real to frida/subprojects/$name"
-          cd subprojects/$name
-          if git am --3way ../../../patches/$name/*.patch; then
-            echo "git am (3way) ok for $name"
-          else
-            git am --abort 2>/dev/null || true
-            for pp in ../../../patches/$name/*.patch; do
-              echo "fallback patch: $pp"
-              patch -p1 --forward --fuzz=8 < "$pp" || true
-            done
-          fi
-          cd ../..
-          echo $i
-        done
-        cd ..
-        
-        ARCHES="android-arm64"
-        for ARCH in $ARCHES
-        do
-          mkdir build-$ARCH
-          cd build-$ARCH
-          ../frida/configure --host=$ARCH
+          mkdir build-android-arm64
+          cd build-android-arm64
+          ../frida/configure --host=android-arm64
           make
           cd ..
-        done
-    
-    - name: Split Repository Name
-      id: split_name
-      run: |
-        repo_name=${{ github.repository }}
-        IFS='/' read -ra repo_parts <<< "$repo_name"
-        echo "owner=${repo_parts[0]}" >> $GITHUB_OUTPUT
-        echo "repo=${repo_parts[1]}" >> $GITHUB_OUTPUT
 
-    - name: Check release version
-      id: checkReleaseVersion
-      uses: actions/github-script@v3
-      with:
-        github-token: ${{secrets.GITHUB_TOKEN}}
-        script: |
-          try {
-            const releaseVersion = '${{ needs.check_version.outputs.FRIDA_VERSION }}'
-            const releaseResponse = await github.repos.getReleaseByTag({
-              owner: '${{ steps.split_name.outputs.owner }}',
-              repo: '${{ steps.split_name.outputs.repo }}',
-              tag: releaseVersion
-            })
-            const {
-              data: { id: releaseId, html_url: htmlUrl, upload_url: uploadUrl }
-            } = releaseResponse;
-            core.setOutput('id', releaseId);
-            core.setOutput('html_url', htmlUrl);
-            core.setOutput('upload_url', uploadUrl);
-            core.setOutput('version', releaseVersion);
-          } catch (e) {
-            core.setFailed(e.message);
-          }
+          gzip -kf build-android-arm64/subprojects/frida-core/server/frida-server
 
-        - name: package build result for Android
-      shell: bash
-      run: |
-        gzip -kf build-android-arm64/subprojects/frida-core/server/frida-server
-
-    - name: Upload android arm64 frida-server artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: florida-server-android-arm64
-        path: build-android-arm64/subprojects/frida-core/server/frida-server.gz
-        if-no-files-found: error
+      - name: Upload android arm64 frida-server artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: florida-server-android-arm64
+          path: build-android-arm64/subprojects/frida-core/server/frida-server.gz
+          if-no-files-found: error
