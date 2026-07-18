@@ -201,17 +201,15 @@ jobs:
             core.setFailed(e.message);
           }
 
-        - name: package build result for Android
+    - name: package build result for Android
       shell: bash
       run: |
+        
         gzip build-android-arm64/subprojects/frida-core/server/frida-server
+        
+        gzip build-android-arm64/subprojects/frida-core/inject/frida-inject
+        
+        gzip build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so
 
-    - name: Upload android arm64 frida-server for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-arm64/subprojects/frida-core/server/frida-server.gz'
-        asset_name: 'florida-server-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-arm64.gz'
-        asset_content_type: application/octet-stream
+        gzip build-android-arm64/subprojects/frida-gum/bindings/gumjs/libfrida-gumjs-1.0.a
+        
